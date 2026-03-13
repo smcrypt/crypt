@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Pro Clone</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+    <style>
+        :root { --primary: #075e54; --secondary: #128c7e; --bg: #e5ddd5; }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+        body { background: #d1d7db; display: flex; justify-content: center; height: 100vh; }
+        
+        #login-screen { background: white; padding: 30px; border-radius: 10px; width: 90%; max-width: 400px; align-self: center; text-align: center; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px; outline: none; }
+        button { width: 100%; padding: 12px; background: var(--secondary); color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+
+        #chat-container { display: none; width: 100%; max-width: 500px; background: var(--bg); flex-direction: column; position: relative; }
+        header { background: var(--primary); color: white; padding: 15px; display: flex; justify-content: space-between; align-items: center; z-index: 10; }
+        
+        #message-area { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px; }
+        .msg { max-width: 80%; padding: 10px; border-radius: 10px; font-size: 14px; box-shadow: 0 1px 1px rgba(0,0,0,0.1); }
+        .sent { align-self: flex-end; background: #dcf8c6; border-top-right-radius: 0; }
+        .received { align-self: flex-start; background: white; border-top-left-radius: 0; }
+        
+        /* Join Notification Style */
+        .join-msg { align-self: center; background: #fff59d; padding: 5px 15px; border-radius: 20px; font-size: 12px; font-weight: bold; margin: 5px 0; color: #555; }
+
+        .typing-box { display: none; padding: 10px 20px; font-size: 13px; color: #555; }
+        .dot { height: 6px; width: 6px; background: #999; border-radius: 50%; display: inline-block; animation: jump 1.4s infinite ease-in-out; margin-right: 2px; }
+        @keyframes jump { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1.0); } }
+
+        .input-bar { background: #f0f0f0; padding: 10px; display: flex; gap: 10px; align-items: center; }
+        #msg-input { flex: 1; border-radius: 20px; border: none; padding: 10px 15px; outline: none; }
+    </style>
+</head>
+<body>
+
+<div id="login-screen">
+    <h2>CRYPT</h2>
+    <input type="text" id="username" placeholder="Your Name" autocomplete="off">
+    <input type="text" id="channel" placeholder="Channel Name" autocomplete="off">
+    <input type="password" id="password" placeholder="Channel Password">
+    <button onclick="enterChat()">Start Chat</button>
+</div>
+
+<div id="chat-container">
+    <header>
+        <span id="header-title">Room</span>
+        <button onclick="exitChat()" style="width:auto; padding:5px 10px; background:#d32f2f;">Exit & Clear</button>
+    </header>
+    
+    <div id="message-area"></div>
+    <div id="typing-ui" class="typing-box"><span id="typer-name"></span> is typing <div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+
+    <div class="input-bar">
+        <input type="file" id="img-input" accept="image/*" style="display:none" onchange="sendImage(this)">
+        <span onclick="document.getElementById('img-input').click()" style="cursor:pointer; font-size:22px;">📷</span>
+        <input type="text" id="msg-input" placeholder="Type a message..." oninput="isTyping()">
+        <button onclick="sendText()" style="width:45px; height:45px; border-radius:50%; background:var(--secondary); color:white; border:none;">➤</button>
+    </div>
+</div>
+
+<script>
+    const firebaseConfig = {
+        apiKey: "AIzaSyDjoClQtSC65wq8DU0uoAl3cQewHQbKoqg",
+        databaseURL: "https://mychatapp-5ed8e-default-rtdb.firebaseio.com",
+        projectId: "mychatapp-5ed8e",
+        appId: "1:403621893464:web:7813264500c0d50367c12d"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    let user, roomPath;
+
+    function enterChat() {
+        user = document.getElementById('username').value.trim();
+        const channel = document.getElementById('channel').value.trim();
+        const pass = document.getElementById('password').value.trim();
+
+        if(!user || !channel || !pass) return alert("Fill all details!");
+
+        roomPath = `rooms/${channel}_${pass}`;
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('chat-container').style.display = 'flex';
+        document.getElementById('header-title').innerText = channel;
+
+        // --- JOIN NOTIFICATION ---
+        db.ref(roomPath + '/messages').push({ sender: 'System', body: `@${user} joined the chat`, type: 'system' });
+
+        // Listen for messages
+        db.ref(roomPath + '/messages').on('child_added', (snap) => {
+            renderMsg(snap.val());
+        });
+
+        // Typing Listener
+        db.ref(roomPath + '/typing').on('value', (snap) => {
+            const t = snap.val() || {};
+            const others = Object.keys(t).filter(u => u !== user);
+            const ui = document.getElementById('typing-ui');
+            if(others.length > 0) { document.getElementById('typer-name').innerText = others[0]; ui.style.display = 'block'; }
+            else { ui.style.display = 'none'; }
+        });
+
+        // Auto-Refresh Detector
+        db.ref(roomPath + '/status').on('value', (snap) => {
+            if (snap.val() === null) { location.reload(); }
+        });
+        db.ref(roomPath + '/status').set('active');
+    }
+
+    function renderMsg(data) {
+        const area = document.getElementById('message-area');
+        const div = document.createElement('div');
+        
+        if(data.type === 'system') {
+            div.className = 'join-msg';
+            div.innerText = data.body;
+        } else {
+            div.className = `msg ${data.sender === user ? 'sent' : 'received'}`;
+            let html = `<span style="font-size:10px; font-weight:bold; color:green; display:block;">${data.sender}</span>`;
+            if(data.type === 'image') html += `<img src="${data.body}" style="max-width:100%; border-radius:5px; margin-top:5px;">`;
+            else html += `<span>${data.body}</span>`;
+            div.innerHTML = html;
+        }
+        
+        area.appendChild(div);
+        area.scrollTop = area.scrollHeight;
+    }
+
+    function sendText() {
+        const input = document.getElementById('msg-input');
+        if(!input.value) return;
+        db.ref(roomPath + '/messages').push({ sender: user, body: input.value, type: 'text' });
+        input.value = "";
+        db.ref(roomPath + '/typing/' + user).remove();
+    }
+
+    function sendImage(input) {
+        const file = input.files[0];
+        if (file.size > 1000000) return alert("Image is too big! (Max 1MB)"); // Security check
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            db.ref(roomPath + '/messages').push({ sender: user, body: e.target.result, type: 'image' });
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function isTyping() {
+        db.ref(roomPath + '/typing/' + user).set(true);
+        clearTimeout(window.t);
+        window.t = setTimeout(() => db.ref(roomPath + '/typing/' + user).remove(), 2000);
+    }
+
+    function exitChat() {
+        db.ref(roomPath).remove();
+    }
+
+    window.onbeforeunload = () => { db.ref(roomPath).remove(); };
+</script>
+
+</body>
+</html>
